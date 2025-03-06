@@ -1,0 +1,44 @@
+// Корневой build.gradle
+buildscript {
+    repositories {
+        mavenLocal()
+        
+        // Добавьте репозиторий JetBrains для Kotlin зависимостей
+        maven { url "https://dl.bintray.com/kotlin/kotlin-dev" }
+        maven { url "https://plugins.gradle.org/m2/" }
+        
+        // Альтернативные репозитории
+        maven { url "https://maven.aliyun.com/repository/google" }
+        maven { url "https://maven.aliyun.com/repository/jcenter" }
+        maven { url "https://maven.aliyun.com/repository/public" }
+        
+        google()
+        mavenCentral()
+    }
+    dependencies {
+        classpath 'com.android.tools.build:gradle:7.4.2'
+        classpath "org.jetbrains.kotlin:kotlin-gradle-plugin:1.6.21"
+    }
+}
+
+allprojects {
+    repositories {
+        mavenLocal()
+        
+        // Добавьте репозиторий JetBrains для Kotlin зависимостей
+        maven { url "https://dl.bintray.com/kotlin/kotlin-dev" }
+        maven { url "https://plugins.gradle.org/m2/" }
+        
+        // Альтернативные репозитории
+        maven { url "https://maven.aliyun.com/repository/google" }
+        maven { url "https://maven.aliyun.com/repository/jcenter" }
+        maven { url "https://maven.aliyun.com/repository/public" }
+        
+        google()
+        mavenCentral()
+    }
+}
+
+task clean(type: Delete) {
+    delete rootProject.buildDir
+} 
