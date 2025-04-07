@@ -54,20 +54,44 @@ class CollisionDetector(private val terrainModel: TerrainModel) {
         }
     }
     
-    // Calculate predicted trajectory points
+    // Calculate predicted trajectory points with trend prediction
     fun calculateTrajectory(steps: Int = 60): List<Triple<Double, Double, Float>> {
         if (smoothedData.isEmpty()) return emptyList()
         
+        // Получаем текущие данные
         val currentData = smoothedData.last()
         val trajectory = mutableListOf<Triple<Double, Double, Float>>()
         
-        // Current position
-        var lat = currentData.latitude
-        var lon = currentData.longitude
-        var alt = currentData.altitude
+        // Если у нас недостаточно исторических данных для анализа тренда,
+        // используем стандартный линейный прогноз
+        if (smoothedData.size < 2) {
+            // Стандартный линейный прогноз (как было раньше)
+            return calculateLinearTrajectory(currentData, steps)
+        }
         
-        // Convert flight data to Earth-centered, Earth-fixed (ECEF) coordinates
-        val (x, y, z) = latLonAltToECEF(lat, lon, alt.toDouble())
+        // Анализируем тренды изменения параметров на основе исторических данных
+        val previousData = smoothedData[smoothedData.size - 2]
+        
+        // Рассчитываем скорость изменения параметров (тренды)
+        val deltaTime = 0.5f // Предполагаем, что данные приходят каждые 0.5 секунды
+        
+        // Изменения скорости (ускорение) по осям
+        val accelerationX = (currentData.vx - previousData.vx) / deltaTime
+        val accelerationY = (currentData.vy - previousData.vy) / deltaTime
+        val accelerationZ = (currentData.vz - previousData.vz) / deltaTime
+        
+        // Изменение высоты (вертикальная скорость)
+        val verticalRate = (currentData.altitude - previousData.altitude) / deltaTime
+        
+        // Изменение курса (угловая скорость)
+        val headingRate = normalizeAngleDelta(currentData.heading - previousData.heading) / deltaTime
+        
+        // Текущие координаты в ECEF
+        val (x, y, z) = latLonAltToECEF(
+            currentData.latitude, 
+            currentData.longitude, 
+            currentData.altitude.toDouble()
+        )
         
         // Convert velocity from body frame to ECEF frame using direction cosine matrix
         val dcm = createDCM(
@@ -75,10 +99,96 @@ class CollisionDetector(private val terrainModel: TerrainModel) {
             Math.toRadians(currentData.pitch.toDouble()),
             Math.toRadians(currentData.heading.toDouble())
         )
-
-
         
-        val (vx, vy, vz) = bodyToECEF(currentData.vx.toDouble(), currentData.vy.toDouble(), currentData.vz.toDouble(), dcm)
+        // Преобразуем скорость из координат самолета в ECEF
+        val (vx, vy, vz) = bodyToECEF(
+            currentData.vx.toDouble(), 
+            currentData.vy.toDouble(), 
+            currentData.vz.toDouble(), 
+            dcm
+        )
+        
+        // Добавляем текущую позицию к траектории
+        trajectory.add(Triple(currentData.latitude, currentData.longitude, currentData.altitude))
+        
+        // Шаг времени в секундах
+        val dt = PREDICTION_TIME / steps
+        
+        // Переменные для отслеживания изменяющихся параметров
+        var currentVx = vx
+        var currentVy = vy 
+        var currentVz = vz
+        var currentHeading = currentData.heading.toDouble()
+        var currentX = x
+        var currentY = y
+        var currentZ = z
+        
+        // Рассчитываем траекторию с учетом изменений
+        for (i in 1..steps) {
+            // Обновляем скорость с учетом ускорения
+            currentVx += accelerationX * dt
+            currentVy += accelerationY * dt
+            currentVz += accelerationZ * dt
+            
+            // Обновляем курс
+            currentHeading += headingRate * dt
+            // Нормализуем курс (0-360 градусов)
+            while (currentHeading >= 360.0) currentHeading -= 360.0
+            while (currentHeading < 0.0) currentHeading += 360.0
+            
+            // Обновляем DCM для нового курса
+            val newDcm = createDCM(
+                Math.toRadians(currentData.roll.toDouble()),
+                Math.toRadians(currentData.pitch.toDouble()),
+                Math.toRadians(currentHeading)
+            )
+            
+            // Преобразуем скорость обратно в ECEF с новым курсом
+            val (newVx, newVy, newVz) = bodyToECEF(
+                currentData.vx.toDouble() + accelerationX * dt * i, 
+                currentData.vy.toDouble() + accelerationY * dt * i, 
+                currentData.vz.toDouble() + accelerationZ * dt * i, 
+                newDcm
+            )
+            
+            // Обновляем позицию с учетом изменения скорости и курса
+            currentX += newVx * dt
+            currentY += newVy * dt
+            currentZ += newVz * dt
+            
+            // Преобразуем координаты обратно в широту, долготу, высоту
+            val (newLat, newLon, newAltBase) = ecefToLatLonAlt(currentX, currentY, currentZ)
+            
+            // Учитываем изменение высоты на основе вертикальной скорости
+            val predictedAltitude = (currentData.altitude + verticalRate * dt * i).toFloat()
+            
+            // Добавляем точку к траектории
+            trajectory.add(Triple(newLat, newLon, predictedAltitude))
+        }
+        
+        return trajectory
+    }
+    
+    // Вспомогательный метод для стандартного линейного прогноза
+    private fun calculateLinearTrajectory(data: FlightData, steps: Int): List<Triple<Double, Double, Float>> {
+        val trajectory = mutableListOf<Triple<Double, Double, Float>>()
+        
+        // Текущая позиция
+        var lat = data.latitude
+        var lon = data.longitude
+        var alt = data.altitude
+        
+        // Convert flight data to ECEF coordinates
+        val (x, y, z) = latLonAltToECEF(lat, lon, alt.toDouble())
+        
+        // Convert velocity from body frame to ECEF frame using direction cosine matrix
+        val dcm = createDCM(
+            Math.toRadians(data.roll.toDouble()),
+            Math.toRadians(data.pitch.toDouble()),
+            Math.toRadians(data.heading.toDouble())
+        )
+        
+        val (vx, vy, vz) = bodyToECEF(data.vx.toDouble(), data.vy.toDouble(), data.vz.toDouble(), dcm)
         
         // Add current position to trajectory
         trajectory.add(Triple(lat, lon, alt))
@@ -103,6 +213,14 @@ class CollisionDetector(private val terrainModel: TerrainModel) {
         return trajectory
     }
     
+    // Нормализует изменение угла для правильного расчета скорости изменения курса
+    private fun normalizeAngleDelta(angleDelta: Float): Float {
+        var delta = angleDelta
+        while (delta > 180f) delta -= 360f
+        while (delta < -180f) delta += 360f
+        return delta
+    }
+    
     // Detect collision with terrain
     fun detectCollision(): Float {
         val trajectory = calculateTrajectory()
@@ -111,20 +229,31 @@ class CollisionDetector(private val terrainModel: TerrainModel) {
         // Time step in seconds
         val dt = PREDICTION_TIME / trajectory.size
         
-        for (i in trajectory.indices) {
+        // Минимальная высота для возникновения предупреждения
+        val minCollisionAltitude = 50f  // минимум 50 м для срабатывания
+        
+        // Исключаем первые несколько точек для избежания ложных срабатываний
+        // когда самолет только что взлетел или находится на земле
+        val startIndex = 5  // пропускаем первые 5 точек
+        
+        for (i in startIndex until trajectory.size) {
             val (lat, lon, alt) = trajectory[i]
             
-            // Get terrain height at this lat/lon
+            // Получаем высоту рельефа в этой точке
             val terrainHeight = terrainModel.getHeightAt(lat, lon)
             
-            // Check for collision (if altitude is below terrain height)
-            if (alt <= terrainHeight) {
-                // Return time to collision in seconds
+            // Проверяем на коллизию (если высота полета ниже высоты рельефа
+            // или опасно близко к нему)
+            val heightDifference = alt - terrainHeight
+            
+            if (alt > minCollisionAltitude && heightDifference <= 100f) {
+                // Если высота над рельефом менее 100м и это не взлет/посадка,
+                // возвращаем время до коллизии в секундах
                 return i * dt
             }
         }
         
-        // No collision detected
+        // Коллизия не обнаружена
         return -1f
     }
     

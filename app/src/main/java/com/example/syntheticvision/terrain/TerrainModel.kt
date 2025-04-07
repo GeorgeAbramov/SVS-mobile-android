@@ -5,7 +5,10 @@ import android.database.sqlite.SQLiteDatabase
 import android.graphics.Bitmap
 import android.graphics.BitmapFactory
 import android.util.Log
+import android.widget.Toast
+import com.example.syntheticvision.data.MapManager
 import java.io.File
+import java.io.FileInputStream
 import java.io.FileOutputStream
 import java.io.InputStream
 import kotlin.math.max
@@ -14,6 +17,13 @@ import kotlin.math.pow
 import kotlin.math.floor
 
 class TerrainModel(private val context: Context) {
+    companion object {
+        private const val TAG = "TerrainModel"
+    }
+    
+    // Менеджер карт для доступа к MBTiles файлам
+    private val mapManager = MapManager(context)
+    
     // Данные высот рельефа
     private var heightMap: Array<Array<Float>> = emptyArray()
     
@@ -32,43 +42,116 @@ class TerrainModel(private val context: Context) {
     private var maxZoom: Int = 0
     private var defaultZoom: Int = 0  // Уровень масштабирования для загрузки данных
     
+    // Статус загрузки карты
+    private var isMapLoaded = false
+    
     /**
      * Загружает данные о рельефе из файла MBTiles
      */
-    fun loadTerrainData(fileName: String) {
+    fun loadTerrainData(fileName: String): Boolean {
         try {
-            Log.d("TerrainModel", "Loading terrain data from $fileName")
+            Log.d(TAG, "Loading terrain data from $fileName")
             
-            // Копируем файл из assets во временный файл для доступа к нему через SQLite
-            val tempFile = copyAssetToTemp(fileName)
+            // Сначала проверяем в папке SVS_Maps
+            val svsMapsFile = checkSVSMapsFolder(fileName)
+            if (svsMapsFile != null) {
+                loadFromFile(svsMapsFile)
+                isMapLoaded = true
+                return true
+            }
             
-            // Открываем базу данных SQLite
-            val database = SQLiteDatabase.openDatabase(
-                tempFile.absolutePath,
-                null,
-                SQLiteDatabase.OPEN_READONLY
-            )
+            // Если не нашли в SVS_Maps, ищем файл карты в других местах хранилища
+            val mapFile = mapManager.findMapFile()
             
-            // Читаем метаданные из таблицы metadata
-            readMetadata(database)
+            if (mapFile == null) {
+                // Файл не найден в хранилище, пробуем загрузить из assets
+                try {
+                    // Проверяем, есть ли файл в assets
+                    val assetsList = context.assets.list("") ?: emptyArray()
+                    
+                    if (fileName in assetsList) {
+                        // Копируем файл из assets во временный файл для доступа к нему через SQLite
+                        val tempFile = copyAssetToTemp(fileName)
+                        loadFromFile(tempFile)
+                        // Удаляем временный файл
+                        tempFile.delete()
+                        isMapLoaded = true
+                    } else {
+                        Log.e(TAG, "Map file not found in assets or storage: $fileName")
+                        showMapNotFoundToast()
+                        createDemoTerrainData()
+                        return false
+                    }
+                } catch (e: Exception) {
+                    Log.e(TAG, "Error accessing assets: ${e.message}")
+                    showMapNotFoundToast()
+                    createDemoTerrainData()
+                    return false
+                }
+            } else {
+                // Файл найден, загружаем из него данные
+                loadFromFile(mapFile)
+                isMapLoaded = true
+            }
             
-            // Загружаем данные о высотах из тайлов
-            loadHeightData(database)
-            
-            // Закрываем базу данных
-            database.close()
-            
-            // Удаляем временный файл
-            tempFile.delete()
-            
-            Log.d("TerrainModel", "Terrain data loaded successfully")
+            Log.d(TAG, "Terrain data loaded successfully")
+            return true
         } catch (e: Exception) {
-            Log.e("TerrainModel", "Error loading terrain data: ${e.message}")
+            Log.e(TAG, "Error loading terrain data: ${e.message}")
             e.printStackTrace()
             
             // В случае ошибки создаем тестовые данные для демонстрации
             createDemoTerrainData()
+            return false
         }
+    }
+    
+    /**
+     * Загружает данные из SQLite файла
+     */
+    private fun loadFromFile(file: File) {
+        // Открываем базу данных SQLite
+        val database = SQLiteDatabase.openDatabase(
+            file.absolutePath,
+            null,
+            SQLiteDatabase.OPEN_READONLY
+        )
+        
+        // Читаем метаданные из таблицы metadata
+        readMetadata(database)
+        
+        // Загружаем данные о высотах из тайлов
+        loadHeightData(database)
+        
+        // Закрываем базу данных
+        database.close()
+    }
+    
+    /**
+     * Показывает сообщение о том, что карта не найдена
+     */
+    private fun showMapNotFoundToast() {
+        Toast.makeText(
+            context,
+            "Карта не найдена. Используются демо-данные.\n" +
+            "Разместите карту в одной из папок:\n" +
+            mapManager.getPreferredMapStoragePath().absolutePath,
+            Toast.LENGTH_LONG
+        ).show()
+    }
+    
+    /**
+     * Возвращает инструкции по установке карты
+     */
+    fun getMapInstallationInstructions(): String {
+        return mapManager.getMapInstallationInstructions()
+    }
+    
+    /**
+     * Проверяет, загружена ли карта
+     */
+    fun isMapLoaded(): Boolean {
+        return isMapLoaded
     }
     
     /**
@@ -256,7 +339,7 @@ class TerrainModel(private val context: Context) {
     /**
      * Создает демонстрационные данные рельефа для тестирования
      */
-    private fun createDemoTerrainData() {
+    fun createDemoTerrainData() {
         Log.d("TerrainModel", "Creating demo terrain data")
         
         // Размер карты высот
@@ -330,5 +413,65 @@ class TerrainModel(private val context: Context) {
         }
         
         return heights
+    }
+    
+    /**
+     * Загружает данные из пользовательского пути к файлу
+     */
+    fun loadMapFromCustomPath(file: File): Boolean {
+        try {
+            Log.d(TAG, "Loading terrain data from custom path: ${file.absolutePath}")
+            
+            if (!file.exists() || !file.isFile || !file.canRead()) {
+                Log.e(TAG, "Custom file is not accessible: exists=${file.exists()}, isFile=${file.isFile}, canRead=${file.canRead()}")
+                return false
+            }
+            
+            Log.d(TAG, "Custom file found, size: ${file.length()} bytes")
+            
+            // Загружаем данные из файла
+            loadFromFile(file)
+            isMapLoaded = true
+            
+            Log.d(TAG, "Terrain data loaded successfully from custom path")
+            return true
+        } catch (e: Exception) {
+            Log.e(TAG, "Error loading terrain data from custom path: ${e.message}")
+            e.printStackTrace()
+            createDemoTerrainData()
+            return false
+        }
+    }
+    
+    /**
+     * Проверяет наличие файла в папке SVS_Maps
+     */
+    private fun checkSVSMapsFolder(fileName: String): File? {
+        val svsMapsDir = File("/storage/emulated/0/Download/SVS_Maps")
+        if (!svsMapsDir.exists()) {
+            Log.d(TAG, "SVS_Maps directory doesn't exist")
+            return null
+        }
+        
+        // Проверяем файл по имени
+        val specificFile = File(svsMapsDir, fileName)
+        if (specificFile.exists() && specificFile.isFile) {
+            Log.d(TAG, "Found specific map file in SVS_Maps: ${specificFile.absolutePath}")
+            return specificFile
+        }
+        
+        // Если не нашли по имени, ищем любой .mbtiles файл
+        val mapFiles = svsMapsDir.listFiles { file -> 
+            file.isFile && file.name.endsWith(".mbtiles", ignoreCase = true) 
+        }
+        
+        if (mapFiles != null && mapFiles.isNotEmpty()) {
+            val mapFile = mapFiles[0]
+            Log.d(TAG, "Found map file in SVS_Maps: ${mapFile.absolutePath}")
+            return mapFile
+        }
+        
+        Log.d(TAG, "No .mbtiles files found in SVS_Maps directory")
+        return null
     }
 } 

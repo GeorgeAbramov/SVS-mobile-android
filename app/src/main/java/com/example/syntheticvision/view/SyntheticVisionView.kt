@@ -16,12 +16,25 @@ class SyntheticVisionView @JvmOverloads constructor(
     defStyleAttr: Int = 0
 ) : View(context, attrs, defStyleAttr) {
     
+    companion object {
+        // Константы цветов для дневного режима
+        private val SKY_DAY_COLOR = Color.parseColor("#4A90E2")
+        private val GROUND_DAY_COLOR = Color.parseColor("#8B5A2B")
+        
+        // Константы цветов для ночного режима
+        private val SKY_NIGHT_COLOR = Color.parseColor("#0D1B3E")
+        private val GROUND_NIGHT_COLOR = Color.parseColor("#2F1C10")
+    }
+    
     // Colors
     private val skyColor = Color.parseColor("#4A90E2")
     private val groundColor = Color.parseColor("#8B5A2B")
     private val warningColor = Color.YELLOW
     private val dangerColor = Color.RED
     private val lineColor = Color.GREEN
+    
+    // Ночной режим (активируется автоматически при низкой освещенности)
+    private var isNightMode = false
     
     // Paints
     private val skyPaint = Paint().apply {
@@ -58,6 +71,13 @@ class SyntheticVisionView @JvmOverloads constructor(
         isAntiAlias = true
     }
     
+    /**
+     * Возвращает цвет в зависимости от дневного/ночного режима
+     */
+    private fun getDayColor(dayColor: Int, nightColor: Int): Int {
+        return if (isNightMode) nightColor else dayColor
+    }
+    
     // Flight data
     private var currentFlightData: FlightData? = null
     
@@ -80,6 +100,14 @@ class SyntheticVisionView @JvmOverloads constructor(
         invalidate()
     }
     
+    /**
+     * Устанавливает ночной режим отображения
+     */
+    fun setNightMode(nightMode: Boolean) {
+        isNightMode = nightMode
+        invalidate()
+    }
+    
     override fun onDraw(canvas: Canvas) {
         super.onDraw(canvas)
         
@@ -87,10 +115,12 @@ class SyntheticVisionView @JvmOverloads constructor(
         val height = height.toFloat()
         
         // Draw sky
-        canvas.drawRect(0f, 0f, width, height / 2, skyPaint)
+        skyPaint.color = getDayColor(SKY_DAY_COLOR, SKY_NIGHT_COLOR)
+        canvas.drawRect(0f, 0f, width.toFloat(), height.toFloat() / 2, skyPaint)
         
         // Draw ground/horizon
-        canvas.drawRect(0f, height / 2, width, height, groundPaint)
+        groundPaint.color = getDayColor(GROUND_DAY_COLOR, GROUND_NIGHT_COLOR)
+        canvas.drawRect(0f, height.toFloat() / 2, width.toFloat(), height.toFloat(), groundPaint)
         
         // Get current flight data
         val flightData = currentFlightData ?: return
@@ -108,8 +138,9 @@ class SyntheticVisionView @JvmOverloads constructor(
     private fun drawAttitudeIndicator(canvas: Canvas, data: FlightData) {
         val width = width.toFloat()
         val height = height.toFloat()
-        val centerX = width / 2
-        val centerY = height / 2
+        // Calculate center coordinates
+        val centerX = width.toFloat() / 2
+        val centerY = height.toFloat() / 2
         
         // Save canvas state
         canvas.save()
@@ -185,9 +216,9 @@ class SyntheticVisionView @JvmOverloads constructor(
         minAltitude = min(minAltitude, currentAltitude)
         maxAltitude = max(maxAltitude, currentAltitude)
         
-        // Add some margin
-        val altitudeRange = (maxAltitude - minAltitude).coerceAtLeast(100f)
-        val scaleFactor = (height / 2) / altitudeRange
+        // Scale altitude for display (0 to ALTITUDE_RANGE meters on half of the screen)
+        val altitudeRange = 1000f // Display altitudes from 0 to 1000 meters
+        val scaleFactor = (height.toFloat() / 2) / altitudeRange
         
         // Draw terrain profile
         for (i in trajectoryPoints.indices) {
@@ -282,17 +313,17 @@ class SyntheticVisionView @JvmOverloads constructor(
             textPaint
         )
         
-        // Draw collision warning if detected
+        // Draw collision warning if detected and time to collision is positive
         val timeToCollision = collisionDetector?.detectCollision() ?: -1f
-        if (timeToCollision > 0) {
+        if (timeToCollision > 0 && timeToCollision != 0f) {
             val warningText = "COLLISION WARNING: ${timeToCollision.toInt()} sec"
             textPaint.color = Color.RED
             textPaint.textSize = 60f
             
             canvas.drawText(
                 warningText,
-                width / 2 - textPaint.measureText(warningText) / 2,
-                height / 2,
+                width.toFloat() / 2 - textPaint.measureText(warningText) / 2,
+                height.toFloat() / 2,
                 textPaint
             )
             

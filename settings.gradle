@@ -1,2 +1,21 @@
-rootProject.name = "SyntheticVision"
+pluginManagement {
+    repositories {
+        google()
+        mavenCentral()
+        gradlePluginPortal()
+    }
+}
+
+dependencyResolutionManagement {
+    repositoriesMode.set(RepositoriesMode.FAIL_ON_PROJECT_REPOS)
+    repositories {
+        google()
+        mavenCentral()
+        maven { url "https://jitpack.io" }
+        maven { url "https://repo.eclipse.org/content/repositories/releases/" } // For Mapsforge
+        maven { url "https://repo.osgeo.org/repository/release/" } // For OSMdroid
+    }
+}
+
+rootProject.name = "Synthetic Vision"
 include ':app' 
